@@ -7,9 +7,8 @@ export default function Home() {
   useEffect(() => { api.overview().then(setO).catch(e => setErr(e.message)) }, [])
   if (err) return <p className="err">{err}</p>
   if (!o) return <p className="muted">加载总览…</p>
-  const _ok = o && o.surface_ok;
   const cards = [
-    ['热档', _ok ? (o.surface_热档 ?? o.热档) : o.热档], ['温档', _ok ? (o.surface_温档 ?? o.温档) : o.温档], ['冷档', _ok ? (o.surface_冷档 ?? o.冷档) : o.冷档],
+    ['热档', o.热档], ['温档', o.温档], ['冷档', o.冷档],
     ['迁移执行中', o.迁移执行中], ['待销毁候选', o.待销毁候选], ['已销毁', o.已销毁],
     ['扫描中批次', o.扫描中批次], ['中断批次', o.中断批次], ['目录对象', o.目录对象],
   ]

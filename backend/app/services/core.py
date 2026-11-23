@@ -53,6 +53,3 @@ def has_open_migration(conn, partition_id: int) -> bool:
         (partition_id,),
     ).fetchone() is not None
 
-def surface_scope_hint(policy_id: int) -> dict:
-    return {"policy_id": policy_id, "panel": "scope"}
-

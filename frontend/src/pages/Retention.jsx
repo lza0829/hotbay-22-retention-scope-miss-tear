@@ -9,6 +9,7 @@ export default function Retention() {
   const [vaults, setVaults] = useState([])
   const [runs, setRuns] = useState([])
   const [batches, setBatches] = useState([])
+  const [ov, setOv] = useState(null)
   const [policyId, setPolicyId] = useState('')
   const [mode, setMode] = useState(MODES[0])
   const [msg, setMsg] = useState('')
@@ -16,6 +17,7 @@ export default function Retention() {
   const [replay, setReplay] = useState(null)
   const [form, setForm] = useState({ name: '', max_age_days: 90, action: '销毁', vault_id: '' })
 
+  // 扫描后所有表面同刷：策略表、批次回执、销毁流水、待销毁计数条同取真实库态。
   const reload = () => {
     api.policies().then(p => {
       setPols(p)
@@ -24,6 +26,7 @@ export default function Retention() {
     })
     api.destroys().then(setRuns)
     api.batches().then(setBatches)
+    api.overview().then(setOv)
   }
   useEffect(() => { reload(); api.vaults().then(setVaults) }, [])
 
@@ -122,6 +125,26 @@ export default function Retention() {
       )}
       {msg && <p className="msg">{msg}</p>}
 
+      {ov && (
+        <section className="panel">
+          <h2>待销毁计数条（与总览同源同刷）</h2>
+          <div className="stat-grid">
+            <div className="stat"><span>待销毁候选</span><strong>{ov.待销毁候选}</strong></div>
+            <div className="stat"><span>已销毁</span><strong>{ov.已销毁}</strong></div>
+            <div className="stat"><span>扫描中批次</span><strong>{ov.扫描中批次}</strong></div>
+            <div className="stat"><span>中断批次</span><strong>{ov.中断批次}</strong></div>
+          </div>
+          <ul className="plain">
+            {ov.片库间.map(v => (
+              <li key={v.id}>
+                {v.name} · 在册 {v.在册分区数} ·{' '}
+                <strong className={v.待销毁候选 ? 'badge' : ''}>待销毁 {v.待销毁候选}</strong>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {preview && (
         <section className="panel">
           <h2>预览回执 · {preview.vault_name}（营业日 {preview.business_day}）</h2>
@@ -160,7 +183,10 @@ export default function Retention() {
         <section className="panel">
           <h2>批次 {replay.batch_id} 重放对账</h2>
           <p className="muted">{replay.predicate}</p>
-          <p>重放命中 {replay.replay_hit_count} 条 · 批次状态 {replay.batch_status} · 实际动作 {replay.actual_actions.length} 条</p>
+          <p>
+            重放命中 {replay.replay_hit_count} 条 · 批次状态 {replay.batch_status} · 实际动作 {replay.actual_actions.length} 条
+            · 占坑跳过 {replay.batch_skipped?.length ?? 0} 条
+          </p>
           <div className="table-wrap">
             <table>
               <thead><tr><th>分区键</th><th>片龄</th><th>当前终态</th><th>批次动作</th></tr></thead>

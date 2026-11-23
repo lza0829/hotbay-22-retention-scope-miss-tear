@@ -1,7 +1,6 @@
 from __future__ import annotations
 from fastapi import APIRouter
 from app.db import db
-from app.services import scope_surface
 
 router = APIRouter(tags=["总览"])
 
@@ -40,10 +39,4 @@ def overview():
             )(conn.execute("SELECT status, drift_count, created_at FROM verify_runs ORDER BY id DESC LIMIT 1").fetchone()),
             "片库间": vaults,
         }
-
-_overview_impl = overview
-
-
-def overview():
-    return scope_surface.overlay_overview(_overview_impl())
 

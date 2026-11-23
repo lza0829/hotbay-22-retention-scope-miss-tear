@@ -73,6 +73,9 @@ CREATE TABLE IF NOT EXISTS retention_batches (
   matched_count INTEGER NOT NULL DEFAULT 0,
   acted_count INTEGER NOT NULL DEFAULT 0,
   skipped_count INTEGER NOT NULL DEFAULT 0,
+  -- 扫描启动时分区表的最大 id 水位：扫描持写锁，之后登记的分区 id 必大于此值，
+  -- 重放按 id<=水位 还原当时可见集合，不受秒后登记的老片污染。
+  snapshot_max_pid INTEGER NOT NULL DEFAULT 0,
   detail TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL,
   finished_at TEXT,
@@ -166,6 +169,16 @@ def _migrate_legacy(conn: sqlite3.Connection) -> None:
         conn.execute(
             "UPDATE retention_batches SET status='已中断', note=COALESCE(NULLIF(note,''),'进程中断，批次回收') || '（启动回收）' WHERE status='扫描中'"
         )
+        # 旧库批次表补登记水位列（重放还原文见「snapshot_max_pid」）。
+        if "snapshot_max_pid" not in _columns(conn, "retention_batches"):
+            conn.execute(
+                "ALTER TABLE retention_batches ADD COLUMN snapshot_max_pid INTEGER NOT NULL DEFAULT 0"
+            )
+
+    # 清除历史「假批次表面」残留键：批次成功只认库内可重放证据，不允许任何旁路面板。
+    conn.execute(
+        "DELETE FROM settings WHERE key IN ('scope_surface_last', 'scope_surface_ok')"
+    )
 
 
 def connect() -> sqlite3.Connection:

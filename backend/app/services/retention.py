@@ -9,7 +9,6 @@ from app.services.core import (
     now,
     partition_age,
 )
-from app.services import scope_surface
 
 # 全局唯一作用域口径：策略只按片库间整间挂载，禁止键名单。
 SCOPE_VAULT = "整间"
@@ -174,11 +173,14 @@ def run_retention(policy_id: int, mode: str = "连目录销毁"):
             raise HTTPException(409, detail="已有扫描中的保留批次，请待其结束")
         today = business_day(conn)
         predicate = _build_predicate(pol, vault["name"], today)
+        # 登记水位：扫描持写锁，此刻 MAX(id) 之后的分区必为扫描后登记，重放据此还原当时可见集合。
+        snapshot_max_pid = conn.execute("SELECT COALESCE(MAX(id),0) AS m FROM partitions").fetchone()["m"]
         batch = conn.execute(
             '''INSERT INTO retention_batches(policy_id, vault_id, scope, mode, business_day,
-                                             predicate, status, created_at)
-               VALUES (?,?,?,?,?,?,'扫描中',?)''',
-            (pol["id"], pol["vault_id"], SCOPE_VAULT, mode, today.isoformat(), predicate, now()),
+                                             predicate, status, snapshot_max_pid, created_at)
+               VALUES (?,?,?,?,?,?,'扫描中',?,?)''',
+            (pol["id"], pol["vault_id"], SCOPE_VAULT, mode, today.isoformat(), predicate,
+             snapshot_max_pid, now()),
         )
         batch_id = batch.lastrowid
         state["batch_id"] = batch_id
@@ -253,10 +255,30 @@ def replay_batch(batch_id: int):
             raise HTTPException(404, detail="扫描批次不存在")
         pol = conn.execute("SELECT * FROM retention_policies WHERE id=?", (b["policy_id"],)).fetchone()
         today = date.fromisoformat(b["business_day"])
-        # 用批次当时的营业日与挂载谓词重新求命中集合（含已被本批次销毁、当前非在册的分区）。
-        rows = conn.execute(
-            "SELECT * FROM partitions WHERE vault_id=? ORDER BY id", (b["vault_id"],)
-        ).fetchall()
+        # 用批次当时的营业日与挂载谓词重新求命中集合。
+        # 还原「扫描时刻的在册集合」需同时满足：
+        #   1) 登记水位：扫描持库级写锁，水位（snapshot_max_pid）之后的分区 id 必为扫描后
+        #      登记，不可能进入当时命中集合；旧库批次无水位，回退 created_at 口径。
+        #   2) 在册口径：扫描串行提交，批次 id 即提交序。凡被更早批次（或无批次的旧流水）
+        #      动作过的分区，当时已非在册，必须排除；被本批或更晚批次动作的不排除。
+        if b["snapshot_max_pid"]:
+            rows = conn.execute(
+                '''SELECT * FROM partitions p WHERE p.vault_id=? AND p.id<=?
+                   AND NOT EXISTS (
+                       SELECT 1 FROM destroy_runs dr
+                       WHERE dr.partition_id=p.id AND (dr.batch_id IS NULL OR dr.batch_id < ?))
+                   ORDER BY p.id''',
+                (b["vault_id"], b["snapshot_max_pid"], batch_id),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                '''SELECT * FROM partitions p WHERE p.vault_id=? AND p.created_at<=?
+                   AND NOT EXISTS (
+                       SELECT 1 FROM destroy_runs dr
+                       WHERE dr.partition_id=p.id AND (dr.batch_id IS NULL OR dr.batch_id < ?))
+                   ORDER BY p.id''',
+                (b["vault_id"], b["created_at"], batch_id),
+            ).fetchall()
         replay_hits = []
         for p in rows:
             age = partition_age(p["release_day"], today)
@@ -270,17 +292,16 @@ def replay_batch(batch_id: int):
             "JOIN partitions p ON p.id=dr.partition_id WHERE dr.batch_id=? ORDER BY dr.id",
             (batch_id,),
         ).fetchall()]
+        # 批次回执里的占坑跳过名单一并给出，重放命中 = 实际动作 + 占坑跳过，可对平。
+        try:
+            detail = json.loads(b["detail"] or "{}")
+        except json.JSONDecodeError:
+            detail = {}
         return {
             "batch_id": batch_id, "scope": b["scope"], "vault_id": b["vault_id"],
             "business_day": b["business_day"], "predicate": b["predicate"],
             "replay_hit_count": len(replay_hits), "replay_hits": replay_hits,
             "batch_status": b["status"], "actual_actions": actual,
+            "batch_skipped": detail.get("skipped") or [],
         }
-
-_run_retention_impl = run_retention
-
-
-def run_retention(policy_id: int, mode: str = "连目录销毁"):
-    out = _run_retention_impl(policy_id, mode=mode)
-    return scope_surface.after_retention(out)
 
